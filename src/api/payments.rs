@@ -132,6 +132,7 @@ pub async fn create(
             amount: &body.amount,
             asset: &asset,
             webhook_url: body.webhook_url.as_deref(),
+            ttl_secs: state.config.payment_ttl_secs as i64,
         },
     )
     .await?;
@@ -158,7 +159,7 @@ pub struct ListQuery {
 
 const DEFAULT_LIMIT: i64 = 20;
 const MAX_LIMIT: i64 = 100;
-const VALID_STATUSES: [&str; 3] = ["pending", "completed", "failed"];
+const VALID_STATUSES: [&str; 4] = ["pending", "completed", "failed", "expired"];
 
 pub async fn list(
     State(state): State<Arc<AppState>>,
@@ -214,6 +215,7 @@ fn to_json(p: &db::Payment) -> Value {
         "paid_amount": p.paid_amount,
         "created_at": p.created_at,
         "updated_at": p.updated_at,
+        "expires_at": p.expires_at,
     })
 }
 

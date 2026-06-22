@@ -29,6 +29,7 @@ This project is under active development. The following is implemented:
 - [x] Payment verification (memo + asset + amount)
 - [x] Webhook dispatch (HMAC-SHA256 signed, with retries)
 - [x] Multi-merchant support (`merchant_id` per payment)
+- [x] Pending-intent expiry (configurable TTL + `payment.expired` webhook)
 - [ ] Horizon streaming (currently polled on an interval)
 - [ ] Dashboard UI
 
@@ -68,6 +69,7 @@ cp .env.example .env
 | `STELLAR_GATEWAY_SECRET` | Your gateway wallet secret key | — |
 | `USDC_ISSUER` | USDC issuer address | testnet issuer |
 | `POLL_INTERVAL_SECS` | How often the Horizon poller reconciles | `10` |
+| `PAYMENT_TTL_SECS` | How long a payment intent stays `pending` before it is expired (from `created_at`) | `3600` |
 | `WEBHOOK_SECRET` | HMAC signing secret for webhooks | — |
 | `WEBHOOK_RETRY_ATTEMPTS` | Webhook delivery attempts | `3` |
 | `WEBHOOK_RETRY_DELAY_MS` | Delay between webhook retries | `5000` |
@@ -123,11 +125,12 @@ Create a new payment intent.
   "amount": "10.00",
   "asset": "XLM",
   "status": "pending",
-  "created_at": "2026-04-29T15:00:00"
+  "created_at": "2026-04-29T15:00:00",
+  "expires_at": "2026-04-29T16:00:00"
 }
 ```
 
-> The user must send exactly `amount` of `asset` to `destination_address` with `memo` set as the transaction memo.
+> The user must send exactly `amount` of `asset` to `destination_address` with `memo` set as the transaction memo. The intent expires at `expires_at` (default one hour after creation) if unpaid.
 
 ---
 
@@ -148,7 +151,8 @@ Fetch the current status of a payment.
   "tx_hash": null,
   "paid_amount": null,
   "created_at": "2026-04-29T15:00:00",
-  "updated_at": "2026-04-29T15:00:00"
+  "updated_at": "2026-04-29T15:00:00",
+  "expires_at": "2026-04-29T16:00:00"
 }
 ```
 
@@ -159,6 +163,7 @@ Fetch the current status of a payment.
 | `pending` | Awaiting payment |
 | `completed` | Payment confirmed on-chain |
 | `failed` | Partial payment or verification failed |
+| `expired` | TTL elapsed before payment arrived; no longer watched |
 
 ---
 
@@ -170,7 +175,7 @@ List payments, newest first.
 
 | Param | Description | Default |
 |---|---|---|
-| `status` | Filter by `pending`, `completed`, or `failed` | all |
+| `status` | Filter by `pending`, `completed`, `failed`, or `expired` | all |
 | `limit` | Page size (1–100) | `20` |
 | `offset` | Rows to skip | `0` |
 
@@ -217,6 +222,11 @@ List payments, newest first.
 }
 ```
 
+Event types: `payment.success` (paid in full), `payment.failed` (underpaid or
+verification failed), and `payment.expired` (the intent's TTL elapsed before
+payment arrived). The `event` field carries the type; `status` carries the
+matching payment status.
+
 Webhooks are signed with `X-StellarGate-Signature` (HMAC-SHA256) so you can verify authenticity.
 
 ## Project Structure
@@ -229,6 +239,7 @@ src/
 ├── db.rs            # Database queries (SQLite)
 ├── money.rs         # Stroops-based amount parsing/validation
 ├── horizon.rs       # Horizon polling listener + payment verification
+├── expiry.rs        # Background sweeper that expires overdue pending intents
 ├── webhook.rs       # HMAC-SHA256 signed webhook dispatch
 └── api/
     ├── mod.rs       # Axum router, layers (CORS/trace/body-limit), 404 fallback
