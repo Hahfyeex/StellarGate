@@ -91,6 +91,102 @@ async fn test_timestamps_are_rfc3339_utc() {
 }
 
 #[tokio::test]
+async fn test_idempotency_key_returns_same_payment() {
+    let server = test_server().await;
+
+    // First request mints a new payment (201 Created).
+    let res1 = server
+        .post("/payments")
+        .add_header("Idempotency-Key", "retry-abc-123")
+        .json(&json!({ "amount": "10", "asset": "XLM" }))
+        .await;
+    res1.assert_status(StatusCode::CREATED);
+    let id1 = res1.json::<Value>()["id"].as_str().unwrap().to_string();
+
+    // Identical retry with the same key returns the original payment (200 OK).
+    let res2 = server
+        .post("/payments")
+        .add_header("Idempotency-Key", "retry-abc-123")
+        .json(&json!({ "amount": "10", "asset": "XLM" }))
+        .await;
+    res2.assert_status_ok();
+    let id2 = res2.json::<Value>()["id"].as_str().unwrap().to_string();
+
+    assert_eq!(id1, id2, "same idempotency key must yield the same payment");
+
+    // Exactly one payment exists.
+    let list: Value = server.get("/payments").await.json();
+    assert_eq!(list["total"], 1);
+}
+
+#[tokio::test]
+async fn test_different_or_missing_idempotency_key_creates_new_payment() {
+    let server = test_server().await;
+
+    let id_a = server
+        .post("/payments")
+        .add_header("Idempotency-Key", "key-a")
+        .json(&json!({ "amount": "1", "asset": "XLM" }))
+        .await
+        .json::<Value>()["id"].as_str().unwrap().to_string();
+
+    // A different key creates a new payment.
+    let res_b = server
+        .post("/payments")
+        .add_header("Idempotency-Key", "key-b")
+        .json(&json!({ "amount": "1", "asset": "XLM" }))
+        .await;
+    res_b.assert_status(StatusCode::CREATED);
+    let id_b = res_b.json::<Value>()["id"].as_str().unwrap().to_string();
+
+    // No key at all also creates a new payment.
+    let res_c = server
+        .post("/payments")
+        .json(&json!({ "amount": "1", "asset": "XLM" }))
+        .await;
+    res_c.assert_status(StatusCode::CREATED);
+    let id_c = res_c.json::<Value>()["id"].as_str().unwrap().to_string();
+
+    assert_ne!(id_a, id_b);
+    assert_ne!(id_a, id_c);
+    assert_ne!(id_b, id_c);
+
+    let list: Value = server.get("/payments").await.json();
+    assert_eq!(list["total"], 3);
+}
+
+#[tokio::test]
+async fn test_idempotency_key_scoped_per_merchant() {
+    let server = test_server().await;
+
+    // Same key, different merchants → two distinct payments.
+    let id_m1 = server
+        .post("/payments")
+        .add_header("Idempotency-Key", "shared-key")
+        .json(&json!({ "amount": "1", "asset": "XLM", "merchant_id": "m1" }))
+        .await
+        .json::<Value>()["id"].as_str().unwrap().to_string();
+
+    let id_m2 = server
+        .post("/payments")
+        .add_header("Idempotency-Key", "shared-key")
+        .json(&json!({ "amount": "1", "asset": "XLM", "merchant_id": "m2" }))
+        .await
+        .json::<Value>()["id"].as_str().unwrap().to_string();
+
+    assert_ne!(id_m1, id_m2, "same key under different merchants must not collide");
+
+    // Re-using m1's key under m1 returns m1's original payment.
+    let res_retry = server
+        .post("/payments")
+        .add_header("Idempotency-Key", "shared-key")
+        .json(&json!({ "amount": "1", "asset": "XLM", "merchant_id": "m1" }))
+        .await;
+    res_retry.assert_status_ok();
+    assert_eq!(res_retry.json::<Value>()["id"].as_str().unwrap(), id_m1);
+}
+
+#[tokio::test]
 async fn test_create_invalid_asset() {
     let res = test_server().await
         .post("/payments")

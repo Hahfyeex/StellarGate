@@ -2,7 +2,7 @@ use crate::{db, money, AppState};
 use axum::{
     async_trait,
     extract::{FromRequest, Path, Query, Request, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -92,6 +92,7 @@ fn default_asset() -> String {
 
 pub async fn create(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     JsonBody(body): JsonBody<CreatePaymentRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let asset = body.asset.to_uppercase();
@@ -115,6 +116,29 @@ pub async fn create(
         }
     }
 
+    let merchant_id = body.merchant_id.as_deref().unwrap_or("anonymous");
+
+    // An optional Idempotency-Key lets a client safely retry a create after a
+    // network blip without minting a duplicate intent. Keys are scoped per
+    // merchant; an empty header value is treated as absent.
+    let idempotency_key = headers
+        .get("Idempotency-Key")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|k| !k.is_empty());
+
+    // If we've already seen this key for this merchant, return the original
+    // payment with 200 instead of creating a new one.
+    if let Some(key) = idempotency_key {
+        if let Some(existing_id) =
+            db::find_payment_id_by_idempotency_key(&state.pool, merchant_id, key).await?
+        {
+            if let Some(payment) = db::get_payment(&state.pool, &existing_id).await? {
+                return Ok((StatusCode::OK, Json(to_json(&payment))));
+            }
+        }
+    }
+
     let memo = generate_unique_memo(&state.pool).await?;
     let id = Uuid::new_v4().to_string();
 
@@ -122,7 +146,7 @@ pub async fn create(
         &state.pool,
         db::NewPayment {
             id: &id,
-            merchant_id: body.merchant_id.as_deref().unwrap_or("anonymous"),
+            merchant_id,
             destination_address: &state.config.gateway_public,
             memo: &memo,
             amount: &body.amount,
@@ -132,6 +156,18 @@ pub async fn create(
         },
     )
     .await?;
+
+    // Persist the key → payment mapping. If a concurrent request won the race,
+    // `save_idempotency_key` returns the canonical id; return that payment so
+    // both retries converge on a single intent.
+    if let Some(key) = idempotency_key {
+        let canonical_id = db::save_idempotency_key(&state.pool, merchant_id, key, &id).await?;
+        if canonical_id != id {
+            if let Some(payment) = db::get_payment(&state.pool, &canonical_id).await? {
+                return Ok((StatusCode::OK, Json(to_json(&payment))));
+            }
+        }
+    }
 
     Ok((StatusCode::CREATED, Json(to_json(&payment))))
 }
