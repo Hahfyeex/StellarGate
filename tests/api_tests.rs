@@ -15,7 +15,7 @@ fn make_config() -> Config {
         horizon_url: String::new(),
         gateway_public: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5".into(),
         gateway_secret: String::new(),
-        usdc_issuer: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5".into(),
+        accepted_assets: stellargate::config::AcceptedAsset::default_list(),
         webhook_secret: String::new(),
         webhook_retry_attempts: 1,
         webhook_retry_delay_ms: 0,
@@ -181,8 +181,11 @@ async fn test_list_payments() {
 
 #[tokio::test]
 async fn test_list_filter_by_status() {
-    let server = test_server().await;
-    server.post("/payments").json(&json!({ "amount": "1", "asset": "XLM" })).await;
+    let (server, pool) = test_server_with_pool().await;
+    let id = server.post("/payments")
+        .json(&json!({ "amount": "1", "asset": "XLM" }))
+        .await
+        .json::<Value>()["id"].as_str().unwrap().to_string();
 
     // All created payments start pending, so completed should be empty.
     let res = server.get("/payments?status=completed").await;
@@ -190,6 +193,14 @@ async fn test_list_filter_by_status() {
     assert_eq!(res.json::<Value>()["total"], 0);
 
     let res = server.get("/payments?status=pending").await;
+    assert_eq!(res.json::<Value>()["total"], 1);
+
+    db::update_payment_status(&pool, &id, "underpaid", "TX1", "0.5")
+        .await
+        .unwrap();
+
+    let res = server.get("/payments?status=underpaid").await;
+    res.assert_status_ok();
     assert_eq!(res.json::<Value>()["total"], 1);
 }
 

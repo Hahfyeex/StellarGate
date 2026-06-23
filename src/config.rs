@@ -36,7 +36,7 @@ pub struct AcceptedAsset {
 }
 
 impl AcceptedAsset {
-    fn parse_list(raw: &str) -> Vec<Self> {
+    pub(crate) fn parse_list(raw: &str) -> Vec<Self> {
         raw.split(',')
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -69,7 +69,7 @@ impl AcceptedAsset {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Config {
     pub port: u16,
     pub database_url: String,
