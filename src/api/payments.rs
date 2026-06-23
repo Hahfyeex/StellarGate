@@ -156,7 +156,7 @@ pub struct ListQuery {
 
 const DEFAULT_LIMIT: i64 = 20;
 const MAX_LIMIT: i64 = 100;
-const VALID_STATUSES: [&str; 5] = ["pending", "underpaid", "completed", "failed", "expired"];
+const VALID_STATUSES: [&str; 4] = ["pending", "completed", "failed", "expired"];
 
 pub async fn list(
     State(state): State<Arc<AppState>>,

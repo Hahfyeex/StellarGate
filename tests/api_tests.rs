@@ -181,11 +181,8 @@ async fn test_list_payments() {
 
 #[tokio::test]
 async fn test_list_filter_by_status() {
-    let (server, pool) = test_server_with_pool().await;
-    let id = server.post("/payments")
-        .json(&json!({ "amount": "1", "asset": "XLM" }))
-        .await
-        .json::<Value>()["id"].as_str().unwrap().to_string();
+    let server = test_server().await;
+    server.post("/payments").json(&json!({ "amount": "1", "asset": "XLM" })).await;
 
     // All created payments start pending, so completed should be empty.
     let res = server.get("/payments?status=completed").await;
@@ -193,14 +190,6 @@ async fn test_list_filter_by_status() {
     assert_eq!(res.json::<Value>()["total"], 0);
 
     let res = server.get("/payments?status=pending").await;
-    assert_eq!(res.json::<Value>()["total"], 1);
-
-    db::update_payment_status(&pool, &id, "underpaid", "TX1", "0.5")
-        .await
-        .unwrap();
-
-    let res = server.get("/payments?status=underpaid").await;
-    res.assert_status_ok();
     assert_eq!(res.json::<Value>()["total"], 1);
 }
 
