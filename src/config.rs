@@ -95,6 +95,8 @@ pub struct Config {
     /// Required when `STELLAR_NETWORK=public`; optional (falls back to permissive) on testnet.
     pub cors_allowed_origins: Vec<String>,
     pub listener_mode: ListenerMode,
+    /// Rate limit for `POST /payments` (requests per second per IP).
+    pub rate_limit_requests_per_sec: u32,
 }
 
 impl Config {
@@ -130,6 +132,7 @@ impl Config {
             listener_mode: ListenerMode::parse(
                 &std::env::var("STELLAR_LISTENER_MODE").unwrap_or_default(),
             ),
+            rate_limit_requests_per_sec: parse_env("RATE_LIMIT_REQUESTS_PER_SEC", 10),
         })
     }
 
@@ -161,6 +164,10 @@ impl std::fmt::Debug for Config {
             )
             .field("cors_allowed_origins", &self.cors_allowed_origins)
             .field("listener_mode", &self.listener_mode)
+            .field(
+                "rate_limit_requests_per_sec",
+                &self.rate_limit_requests_per_sec,
+            )
             .finish()
     }
 }
@@ -206,6 +213,7 @@ mod tests {
             rate_limit_requests_per_sec: 10,
             cors_allowed_origins: vec![],
             listener_mode: ListenerMode::Stream,
+            rate_limit_requests_per_sec: 10,
         };
         let output = format!("{cfg:?}");
         assert!(
@@ -247,5 +255,24 @@ mod tests {
                 issuer: Some("GISSUER2".into())
             }
         );
+    }
+}
+
+fn env_or(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Parse an env var into `T`, falling back to `default` (and warning) when the
+/// variable is set but unparseable, so a typo never silently breaks behaviour.
+fn parse_env<T>(key: &str, default: T) -> T
+where
+    T: std::str::FromStr,
+{
+    match std::env::var(key) {
+        Ok(raw) => raw.parse().unwrap_or_else(|_| {
+            tracing::warn!("invalid value for {key}={raw:?}, using default");
+            default
+        }),
+        Err(_) => default,
     }
 }

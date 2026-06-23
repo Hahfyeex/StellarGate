@@ -135,29 +135,6 @@ pub async fn create(
         }
     }
 
-    let merchant_id = body.merchant_id.as_deref().unwrap_or("anonymous");
-
-    // An optional Idempotency-Key lets a client safely retry a create after a
-    // network blip without minting a duplicate intent. Keys are scoped per
-    // merchant; an empty header value is treated as absent.
-    let idempotency_key = headers
-        .get("Idempotency-Key")
-        .and_then(|v| v.to_str().ok())
-        .map(str::trim)
-        .filter(|k| !k.is_empty());
-
-    // If we've already seen this key for this merchant, return the original
-    // payment with 200 instead of creating a new one.
-    if let Some(key) = idempotency_key {
-        if let Some(existing_id) =
-            db::find_payment_id_by_idempotency_key(&state.pool, merchant_id, key).await?
-        {
-            if let Some(payment) = db::get_payment(&state.pool, &existing_id).await? {
-                return Ok((StatusCode::OK, Json(to_json(&payment))));
-            }
-        }
-    }
-
     let memo = generate_unique_memo(&state.pool).await?;
     let id = Uuid::new_v4().to_string();
 

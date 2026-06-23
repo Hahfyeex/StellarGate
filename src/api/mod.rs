@@ -31,9 +31,7 @@ struct RateLimit(Arc<DefaultKeyedRateLimiter<IpAddr>>);
 
 pub fn router(state: Arc<AppState>) -> axum::Router {
     let cors = build_cors(&state.config);
-    let rps = state.config.rate_limit_requests_per_sec.max(1);
-    let quota = Quota::per_second(NonZeroU32::new(rps).unwrap());
-    let rate_limit = RateLimit(Arc::new(RateLimiter::keyed(quota)));
+    let rate_limit_rps = state.config.rate_limit_requests_per_sec;
 
     axum::Router::new()
         .route("/", get(|| async { "StellarGate API v0.1.0" }))
@@ -48,9 +46,10 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
                     "/:id/webhooks/:delivery_id/redeliver",
                     post(payments::redeliver_webhook),
                 )
-                .layer(middleware::from_fn_with_state(
-                    rate_limit,
-                    rate_limit_middleware,
+                .layer(middleware::from_fn(
+                    move |ConnectInfo(addr): ConnectInfo<SocketAddr>, req: Request, next: Next| {
+                        rate_limit_middleware(addr, rate_limit_rps, req, next)
+                    },
                 ))
         })
         .fallback(not_found)
@@ -63,21 +62,32 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
 }
 
 async fn rate_limit_middleware(
-    State(rate_limit): State<RateLimit>,
-    connect_info: Option<ConnectInfo<SocketAddr>>,
+    addr: SocketAddr,
+    rate_limit_rps: u32,
     req: Request,
     next: Next,
-) -> Response {
-    // Key on the peer IP. When the server is started without connect-info (or
-    // under axum-test, which provides none), fall back to a shared key so the
-    // limiter still functions rather than rejecting or panicking.
-    let ip = connect_info
-        .map(|ConnectInfo(addr)| addr.ip())
-        .unwrap_or(IpAddr::from([0, 0, 0, 0]));
+) -> axum::response::Response {
+    static LIMITERS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, governor::DefaultDirectRateLimiter>>,
+    > = std::sync::OnceLock::new();
 
-    if rate_limit.0.check_key(&ip).is_err() {
-        // The per-second quota refills within one second, so asking the client
-        // to wait a single second is always sufficient.
+    let limiters = LIMITERS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let ip = addr.ip().to_string();
+
+    // Scoped so the `MutexGuard` is dropped before the `next.run().await`
+    // below, keeping the returned future `Send`.
+    let allowed = {
+        let mut map = limiters.lock().unwrap();
+        let limiter = map.entry(ip).or_insert_with(|| {
+            governor::RateLimiter::direct(governor::Quota::per_second(
+                std::num::NonZeroU32::new(rate_limit_rps).unwrap(),
+            ))
+        });
+        limiter.check().is_ok()
+    };
+
+    if !allowed {
+        let retry_after = (1000 / rate_limit_rps).max(1);
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [(

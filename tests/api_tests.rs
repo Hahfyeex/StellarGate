@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use stellargate::{
     api,
-    config::{Config, ListenerMode},
+    config::{AcceptedAsset, Config, ListenerMode},
     db, AppState,
 };
 use time::format_description::well_known::Rfc3339;
@@ -19,7 +19,7 @@ fn make_config() -> Config {
         horizon_url: String::new(),
         gateway_public: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5".into(),
         gateway_secret: String::new(),
-        accepted_assets: stellargate::config::AcceptedAsset::default_list(),
+        accepted_assets: AcceptedAsset::default_list(),
         webhook_secret: String::new(),
         webhook_retry_attempts: 1,
         webhook_retry_delay_ms: 0,
@@ -30,6 +30,7 @@ fn make_config() -> Config {
         rate_limit_requests_per_sec: 1000,
         cors_allowed_origins: vec![],
         listener_mode: ListenerMode::Poll,
+        rate_limit_requests_per_sec: 1000,
     }
 }
 
@@ -48,12 +49,13 @@ async fn server_with_config(cfg: Config) -> (TestServer, db::Db) {
         .unwrap();
     db::migrate(&pool).await.unwrap();
     let http = reqwest::Client::new();
-    let server = TestServer::new(api::router(Arc::new(AppState {
+    let router = api::router(Arc::new(AppState {
         pool: pool.clone(),
         config: cfg,
         http,
-    })))
-    .unwrap();
+    }))
+    .into_make_service_with_connect_info::<std::net::SocketAddr>();
+    let server = TestServer::new(router).unwrap();
     (server, pool)
 }
 
