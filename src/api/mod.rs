@@ -1,6 +1,6 @@
-use crate::AppState;
+use crate::{db, AppState};
 use axum::{
-    extract::ConnectInfo,
+    extract::{ConnectInfo, State},
     http::StatusCode,
     middleware::{self, Next},
     response::IntoResponse,
@@ -62,6 +62,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
     axum::Router::new()
         .route("/", get(|| async { "StellarGate API v0.1.0" }))
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/openapi.json", get(openapi))
         .route("/docs", get(swagger_ui))
         .nest("/payments", {
@@ -74,6 +75,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
                     rate_limit_rps,
                     rate_limit_middleware,
                 ))
+                .layer(tower_http::util::ConnectInfoLayer::new())
         })
         .fallback(not_found)
         .layer(PropagateRequestIdLayer::x_request_id())
@@ -159,6 +161,13 @@ fn build_cors(cfg: &crate::config::Config) -> CorsLayer {
 
 async fn health() -> impl IntoResponse {
     Json(json!({ "status": "ok" }))
+}
+
+async fn ready(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match db::ping(&state.pool).await {
+        Ok(()) => (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response(),
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "status": "unavailable" }))).into_response(),
+    }
 }
 
 async fn not_found() -> impl IntoResponse {
