@@ -102,6 +102,10 @@ pub struct Config {
     /// Required when `STELLAR_NETWORK=public`; optional (falls back to permissive) on testnet.
     pub cors_allowed_origins: Vec<String>,
     pub listener_mode: ListenerMode,
+    /// Shared secret required (via the `X-Admin-Secret` header) to call
+    /// `POST /merchants`. Empty disables provisioning entirely — the endpoint
+    /// rejects every request rather than falling back to an open default.
+    pub admin_provisioning_secret: String,
 }
 
 impl Config {
@@ -149,6 +153,7 @@ impl Config {
             listener_mode: ListenerMode::parse(
                 &std::env::var("STELLAR_LISTENER_MODE").unwrap_or_default(),
             ),
+            admin_provisioning_secret: env_or("ADMIN_PROVISIONING_SECRET", ""),
         };
         config.validate_addresses()?;
         Ok(config)
@@ -244,6 +249,7 @@ impl std::fmt::Debug for Config {
             .field("db_busy_timeout_ms", &self.db_busy_timeout_ms)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
             .field("listener_mode", &self.listener_mode)
+            .field("admin_provisioning_secret", &"***")
             .finish()
     }
 }
@@ -287,6 +293,7 @@ mod tests {
             db_busy_timeout_ms: 5000,
             cors_allowed_origins: vec![],
             listener_mode: ListenerMode::Stream,
+            admin_provisioning_secret: "admin-super-secret".into(),
         };
         let output = format!("{cfg:?}");
         assert!(
@@ -296,6 +303,10 @@ mod tests {
         assert!(
             !output.contains("webhook-hmac-secret"),
             "webhook_secret must not appear in Debug output"
+        );
+        assert!(
+            !output.contains("admin-super-secret"),
+            "admin_provisioning_secret must not appear in Debug output"
         );
         assert!(
             output.contains("***"),
@@ -349,6 +360,7 @@ mod tests {
             db_busy_timeout_ms: 5000,
             cors_allowed_origins: vec![],
             listener_mode: ListenerMode::Stream,
+            admin_provisioning_secret: String::new(),
         }
     }
 
