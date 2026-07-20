@@ -240,10 +240,11 @@ pub struct ListQuery {
 const DEFAULT_LIMIT: i64 = 20;
 const MAX_LIMIT: i64 = 100;
 /// Statuses a payment can actually hold, and therefore the only ones worth
-/// filtering on. `underpaid` is set by settlement when a payment arrives short
-/// of the requested amount (see `horizon::settle`) — an operational state
-/// merchants need to be able to list.
-const VALID_STATUSES: [&str; 5] = ["pending", "completed", "underpaid", "failed", "expired"];
+/// filtering on: `pending` at creation, `completed`/`underpaid` from
+/// settlement (`horizon::settle`), and `expired` from the TTL sweeper
+/// (`db::expire_overdue`). Nothing writes any other value, so anything else is
+/// a guaranteed-empty filter and is rejected as invalid.
+const VALID_STATUSES: [&str; 4] = ["pending", "completed", "underpaid", "expired"];
 
 pub async fn list(
     State(state): State<Arc<AppState>>,

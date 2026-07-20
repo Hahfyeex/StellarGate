@@ -241,7 +241,7 @@ Fetch the current status of a payment.
 |---|---|
 | `pending` | Awaiting payment |
 | `completed` | Payment confirmed on-chain |
-| `failed` | Partial payment or verification failed |
+| `underpaid` | Less than the requested amount received; stays watchable for a top-up |
 | `expired` | TTL elapsed before payment arrived; no longer watched |
 
 ---
@@ -254,7 +254,7 @@ List payments, newest first.
 
 | Param | Description | Default |
 |---|---|---|
-| `status` | Filter by `pending`, `completed`, `underpaid`, `failed`, or `expired` | all |
+| `status` | Filter by `pending`, `completed`, `underpaid`, or `expired` | all |
 | `limit` | Page size (1–100) | `20` |
 | `offset` | Rows to skip | `0` |
 

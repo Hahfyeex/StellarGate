@@ -189,7 +189,7 @@ components:
 
     PaymentStatus:
       type: string
-      enum: [pending, completed, failed, expired, underpaid]
+      enum: [pending, completed, underpaid, expired]
 
     Payment:
       type: object

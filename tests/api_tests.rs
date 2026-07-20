@@ -702,6 +702,63 @@ async fn test_list_invalid_status() {
     res.assert_status(StatusCode::BAD_REQUEST);
 }
 
+/// No code path ever writes `failed` to a payment — underpayment settles as
+/// `underpaid` — so accepting it as a filter would only ever return an empty
+/// page while implying the gateway has a lifecycle state it doesn't.
+#[tokio::test]
+async fn test_list_rejects_failed_status() {
+    let server = test_server().await;
+    let key = provision_merchant(&server).await;
+    let res = server
+        .get("/payments?status=failed")
+        .add_header("Authorization", format!("Bearer {key}"))
+        .await;
+    res.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(res.json::<Value>()["code"], "invalid_status");
+}
+
+/// Every status the filter accepts must be one the code can actually produce,
+/// and every status the code produces must be filterable.
+#[tokio::test]
+async fn test_filterable_statuses_match_producible_statuses() {
+    let (server, pool) = test_server_with_pool().await;
+    let key = provision_merchant(&server).await;
+    let auth = format!("Bearer {key}");
+
+    // `pending` on create, `completed`/`underpaid` from horizon::settle,
+    // `expired` from the TTL sweeper.
+    for (i, status) in ["pending", "completed", "underpaid", "expired"]
+        .into_iter()
+        .enumerate()
+    {
+        let id = server
+            .post("/payments")
+            .add_header("Authorization", auth.clone())
+            .json(&json!({ "amount": format!("{}", i + 1), "asset": "XLM" }))
+            .await
+            .json::<Value>()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        if status != "pending" {
+            stellargate::db::update_payment_status(&pool, &id, status, "TX", "1")
+                .await
+                .unwrap();
+        }
+
+        let res = server
+            .get(&format!("/payments?status={status}"))
+            .add_header("Authorization", auth.clone())
+            .await;
+        res.assert_status_ok();
+        assert_eq!(
+            res.json::<Value>()["total"],
+            1,
+            "status {status} must be filterable"
+        );
+    }
+}
+
 #[tokio::test]
 async fn test_list_cursor_pagination() {
     let server = test_server().await;
