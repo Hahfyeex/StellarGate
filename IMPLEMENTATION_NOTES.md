@@ -67,12 +67,11 @@ The original `payload` is stored and re-sent as-is during redeliver. This means:
 All error responses use the standard `{ "error": "message" }` format for consistency with existing endpoints.
 
 ### 5. Merchant Scoping
-Both `GET /payments/:id/webhooks` and `POST /payments/:id/webhooks/:delivery_id/redeliver`
-require the merchant bearer token and assert `payment.merchant_id ==
-authenticated_merchant`, reporting the same 404 as a missing payment when a
-different merchant's payment id is requested. Redelivery is also
-rate-limited (same mechanism as `POST /payments`, keyed independently) since
-it triggers a server-originated outbound request on every call.
+`GET /payments/:id/webhooks` requires the merchant bearer token and asserts
+`payment.merchant_id == authenticated_merchant`, reporting the same 404 as a
+missing payment when a different merchant's payment id is requested — this
+prevents both cross-tenant reads and enumeration of other merchants' payment
+ids via this endpoint.
 
 ## Testing Strategy
 

@@ -25,15 +25,19 @@ fn make_config() -> Config {
         webhook_retry_delay_ms: 0,
         poll_interval_secs: 10,
         payment_ttl_secs: 3600,
-        // High enough that these tests never trip the limiter; dedicated
-        // rate-limit coverage lives in tests/rate_limit_tests.rs.
+        /* High enough that these tests never trip the limiter; dedicated
+        rate-limit coverage lives in tests/rate_limit_tests.rs. */
         rate_limit_requests_per_sec: 1000,
         db_pool_max_connections: 10,
         db_busy_timeout_ms: 5000,
         cors_allowed_origins: vec![],
         listener_mode: ListenerMode::Poll,
+        admin_provisioning_secret: TEST_ADMIN_SECRET.into(),
     }
 }
+
+/// Shared admin secret used by tests to provision merchants.
+const TEST_ADMIN_SECRET: &str = "test-admin-secret";
 
 async fn test_server_with_pool() -> (TestServer, db::Db) {
     server_with_config(make_config()).await
@@ -66,9 +70,41 @@ async fn test_server() -> TestServer {
 
 /// Provision a merchant via POST /merchants and return the API key.
 async fn provision_merchant(server: &TestServer) -> String {
-    let res = server.post("/merchants").await;
+    let res = server
+        .post("/merchants")
+        .add_header("X-Admin-Secret", TEST_ADMIN_SECRET)
+        .await;
     res.assert_status(StatusCode::CREATED);
     res.json::<Value>()["api_key"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn test_provision_merchant_without_admin_secret_is_rejected() {
+    let server = test_server().await;
+    let res = server.post("/merchants").await;
+    res.assert_status(StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_provision_merchant_with_wrong_admin_secret_is_rejected() {
+    let server = test_server().await;
+    let res = server
+        .post("/merchants")
+        .add_header("X-Admin-Secret", "not-the-right-secret")
+        .await;
+    res.assert_status(StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_provision_merchant_disabled_when_secret_unconfigured() {
+    let mut cfg = make_config();
+    cfg.admin_provisioning_secret = String::new();
+    let (server, _pool) = server_with_config(cfg).await;
+    let res = server
+        .post("/merchants")
+        .add_header("X-Admin-Secret", "")
+        .await;
+    res.assert_status(StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -410,15 +446,159 @@ async fn test_asset_is_case_insensitive() {
 }
 
 #[tokio::test]
-async fn test_reject_bad_webhook_url() {
+async fn test_webhook_url_https_accepted_on_testnet() {
     let server = test_server().await;
     let key = provision_merchant(&server).await;
     let res = server
         .post("/payments")
         .add_header("Authorization", format!("Bearer {key}"))
-        .json(&json!({ "amount": "1", "asset": "XLM", "webhook_url": "ftp://x" }))
+        .json(
+            &json!({ "amount": "1", "asset": "XLM", "webhook_url": "https://example.com/webhook" }),
+        )
+        .await;
+    res.assert_status(StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_webhook_url_http_accepted_on_testnet() {
+    let server = test_server().await;
+    let key = provision_merchant(&server).await;
+    let res = server
+        .post("/payments")
+        .add_header("Authorization", format!("Bearer {key}"))
+        .json(
+            &json!({ "amount": "1", "asset": "XLM", "webhook_url": "http://example.com/webhook" }),
+        )
+        .await;
+    res.assert_status(StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_webhook_url_http_rejected_on_public_network() {
+    let mut cfg = make_config();
+    cfg.network = "public".into();
+    let (server, _db) = server_with_config(cfg).await;
+    let key = provision_merchant(&server).await;
+    let res = server
+        .post("/payments")
+        .add_header("Authorization", format!("Bearer {key}"))
+        .json(
+            &json!({ "amount": "1", "asset": "XLM", "webhook_url": "http://example.com/webhook" }),
+        )
         .await;
     res.assert_status(StatusCode::BAD_REQUEST);
+    let body: Value = res.json();
+    assert_eq!(body["code"], "invalid_webhook_url");
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("must be an HTTPS URL on public network"));
+}
+
+#[tokio::test]
+async fn test_webhook_url_https_accepted_on_public_network() {
+    let mut cfg = make_config();
+    cfg.network = "public".into();
+    let (server, _db) = server_with_config(cfg).await;
+    let key = provision_merchant(&server).await;
+    let res = server
+        .post("/payments")
+        .add_header("Authorization", format!("Bearer {key}"))
+        .json(
+            &json!({ "amount": "1", "asset": "XLM", "webhook_url": "https://example.com/webhook" }),
+        )
+        .await;
+    res.assert_status(StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_webhook_url_invalid_rejected() {
+    let server = test_server().await;
+    let key = provision_merchant(&server).await;
+
+    // ftp scheme
+    let res = server
+        .post("/payments")
+        .add_header("Authorization", format!("Bearer {key}"))
+        .json(&json!({ "amount": "1", "asset": "XLM", "webhook_url": "ftp://example.com" }))
+        .await;
+    res.assert_status(StatusCode::BAD_REQUEST);
+
+    // malformed string
+    let res = server
+        .post("/payments")
+        .add_header("Authorization", format!("Bearer {key}"))
+        .json(&json!({ "amount": "1", "asset": "XLM", "webhook_url": "not-a-url" }))
+        .await;
+    res.assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_reject_webhook_url_targeting_loopback() {
+    let server = test_server().await;
+    let key = provision_merchant(&server).await;
+    let res = server
+        .post("/payments")
+        .add_header("Authorization", format!("Bearer {key}"))
+        .json(&json!({ "amount": "1", "asset": "XLM", "webhook_url": "http://127.0.0.1:9/hook" }))
+        .await;
+    res.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(
+        res.json::<Value>()["code"],
+        "invalid_webhook_url",
+        "loopback webhook targets must be rejected at creation"
+    );
+}
+
+#[tokio::test]
+async fn test_reject_webhook_url_targeting_link_local_metadata_address() {
+    let server = test_server().await;
+    let key = provision_merchant(&server).await;
+    let res = server
+        .post("/payments")
+        .add_header("Authorization", format!("Bearer {key}"))
+        .json(&json!({
+            "amount": "1",
+            "asset": "XLM",
+            "webhook_url": "http://169.254.169.254/latest/meta-data/"
+        }))
+        .await;
+    res.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(res.json::<Value>()["code"], "invalid_webhook_url");
+}
+
+/// A delivery row can predate this guard (or be forged some other way); the
+/// redeliver endpoint is unauthenticated, so it must re-validate the target on
+/// every call rather than trusting whatever URL was stored.
+#[tokio::test]
+async fn test_redeliver_rejects_ssrf_target_even_for_a_stored_delivery() {
+    let (server, pool) = test_server_with_pool().await;
+    let key = provision_merchant(&server).await;
+    let id = server
+        .post("/payments")
+        .add_header("Authorization", format!("Bearer {key}"))
+        .json(&json!({ "amount": "5", "asset": "XLM" }))
+        .await
+        .json::<Value>()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    stellargate::db::save_webhook_delivery(
+        &pool,
+        "delivery-ssrf",
+        &id,
+        "http://127.0.0.1:9/hook",
+        r#"{"event":"payment.completed"}"#,
+    )
+    .await
+    .unwrap();
+
+    let res = server
+        .post(&format!("/payments/{id}/webhooks/delivery-ssrf/redeliver"))
+        .await;
+    res.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(res.json::<Value>()["code"], "webhook_target_blocked");
 }
 
 #[tokio::test]
@@ -562,10 +742,22 @@ async fn test_unknown_route_returns_json_404() {
 }
 
 #[tokio::test]
-async fn test_list_webhooks_not_found() {
+async fn test_list_webhooks_unauthenticated_returns_401() {
     let res = test_server()
         .await
         .get("/payments/nonexistent/webhooks")
+        .await;
+    res.assert_status(StatusCode::UNAUTHORIZED);
+    assert_eq!(res.json::<Value>()["code"], "unauthorized");
+}
+
+#[tokio::test]
+async fn test_list_webhooks_not_found() {
+    let server = test_server().await;
+    let key = provision_merchant(&server).await;
+    let res = server
+        .get("/payments/nonexistent/webhooks")
+        .add_header("Authorization", format!("Bearer {key}"))
         .await;
     res.assert_status(StatusCode::NOT_FOUND);
     let body: Value = res.json();
@@ -577,9 +769,10 @@ async fn test_list_webhooks_not_found() {
 async fn test_list_webhooks_empty() {
     let server = test_server().await;
     let key = provision_merchant(&server).await;
+    let auth = format!("Bearer {key}");
     let id = server
         .post("/payments")
-        .add_header("Authorization", format!("Bearer {key}"))
+        .add_header("Authorization", auth.clone())
         .json(&json!({ "amount": "5", "asset": "XLM" }))
         .await
         .json::<Value>()["id"]
@@ -587,11 +780,51 @@ async fn test_list_webhooks_empty() {
         .unwrap()
         .to_string();
 
-    let res = server.get(&format!("/payments/{id}/webhooks")).await;
+    let res = server
+        .get(&format!("/payments/{id}/webhooks"))
+        .add_header("Authorization", auth)
+        .await;
     res.assert_status_ok();
     let body: Value = res.json();
     assert_eq!(body["payment_id"], id);
     assert_eq!(body["deliveries"].as_array().unwrap().len(), 0);
+}
+
+/// A merchant cannot read another merchant's webhook deliveries — the payment
+/// id alone must not be enough, and the response must not distinguish "not
+/// yours" from "doesn't exist".
+#[tokio::test]
+async fn test_list_webhooks_rejects_other_merchants_payment() {
+    let (server, pool) = test_server_with_pool().await;
+
+    let owner_key = provision_merchant(&server).await;
+    let id = server
+        .post("/payments")
+        .add_header("Authorization", format!("Bearer {owner_key}"))
+        .json(&json!({ "amount": "5", "asset": "XLM" }))
+        .await
+        .json::<Value>()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    stellargate::db::save_webhook_delivery(
+        &pool,
+        "delivery-owned",
+        &id,
+        "https://example.com/webhook",
+        r#"{"event":"payment.completed"}"#,
+    )
+    .await
+    .unwrap();
+
+    let other_key = provision_merchant(&server).await;
+    let res = server
+        .get(&format!("/payments/{id}/webhooks"))
+        .add_header("Authorization", format!("Bearer {other_key}"))
+        .await;
+    res.assert_status(StatusCode::NOT_FOUND);
+    assert_eq!(res.json::<Value>()["code"], "payment_not_found");
 }
 
 #[tokio::test]
@@ -713,7 +946,10 @@ async fn test_webhook_delivery_isolation() {
     .unwrap();
 
     // List webhooks for payment 1 should find it
-    let res1 = server.get(&format!("/payments/{id1}/webhooks")).await;
+    let res1 = server
+        .get(&format!("/payments/{id1}/webhooks"))
+        .add_header("Authorization", auth.clone())
+        .await;
     res1.assert_status_ok();
     assert_eq!(
         res1.json::<Value>()["deliveries"].as_array().unwrap().len(),
@@ -721,7 +957,10 @@ async fn test_webhook_delivery_isolation() {
     );
 
     // List webhooks for payment 2 should be empty
-    let res2 = server.get(&format!("/payments/{id2}/webhooks")).await;
+    let res2 = server
+        .get(&format!("/payments/{id2}/webhooks"))
+        .add_header("Authorization", auth)
+        .await;
     res2.assert_status_ok();
     assert_eq!(
         res2.json::<Value>()["deliveries"].as_array().unwrap().len(),

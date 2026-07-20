@@ -105,12 +105,20 @@ pub async fn dispatch(state: &AppState, payment: &db::Payment, event: &str, delt
         warn!(error = %e, "failed to record webhook delivery");
     }
 
+    let client = match safe_client(state, &url).await {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(payment_id = %payment.id, %url, error = %e, "webhook blocked by SSRF guard");
+            let _ = db::update_webhook_delivery(&state.pool, &delivery_id, "failed", 0).await;
+            return;
+        }
+    };
+
     let attempts = state.config.webhook_retry_attempts.max(1);
     let delay = Duration::from_millis(state.config.webhook_retry_delay_ms);
 
     for attempt in 1..=attempts {
-        let result = state
-            .http
+        let result = client
             .post(&url)
             .header("Content-Type", "application/json")
             .header("X-StellarGate-Signature", &signature)
@@ -149,6 +157,14 @@ pub async fn dispatch(state: &AppState, payment: &db::Payment, event: &str, delt
     let _ = db::update_webhook_delivery(&state.pool, &delivery_id, "failed", attempts as i64).await;
 }
 
+/// Resolve and SSRF-check `url`, returning a client pinned to the validated
+/// address. Honors `webhook_allow_private_targets` for local dev/tests that
+/// intentionally target a loopback mock server.
+pub(crate) async fn safe_client(state: &AppState, url: &str) -> anyhow::Result<reqwest::Client> {
+    let target = crate::ssrf::validate(url, state.config.webhook_allow_private_targets).await?;
+    Ok(crate::ssrf::pinned_client(&target)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,9 +181,9 @@ mod tests {
 
     #[test]
     fn signature_matches_known_vector() {
-        // Locks the Stripe-style signed payload format "{timestamp}.{body}".
-        // Independently reproducible:
-        //   printf '1700000000.{"id":"evt_1"}' | openssl dgst -sha256 -hmac whsec_test
+        /* Locks the Stripe-style signed payload format "{timestamp}.{body}".
+        Independently reproducible:
+          printf '1700000000.{"id":"evt_1"}' | openssl dgst -sha256 -hmac whsec_test */
         let sig = sign("whsec_test", 1_700_000_000, br#"{"id":"evt_1"}"#);
         assert_eq!(
             sig,
@@ -177,8 +193,8 @@ mod tests {
 
     #[test]
     fn signature_covers_timestamp() {
-        // The whole point of the timestamp: changing only it changes the
-        // signature, so an old signature cannot be replayed with a fresh time.
+        /* The whole point of the timestamp: changing only it changes the
+        signature, so an old signature cannot be replayed with a fresh time. */
         let body = b"{\"event\":\"payment.completed\"}";
         assert_ne!(
             sign("secret", 1_700_000_000, body),

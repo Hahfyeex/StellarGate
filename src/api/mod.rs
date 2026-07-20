@@ -51,19 +51,23 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .route("/", get(|| async { "StellarGate API v0.1.0" }))
         .route("/health", get(health))
         .route("/ready", get(ready))
-        // Merchant provisioning — returns a one-time plaintext API key.
-        .route("/merchants", post(provision_merchant))
+        /* Merchant provisioning — returns a one-time plaintext API key. Gated
+        behind ADMIN_PROVISIONING_SECRET so it can't be used to mint
+        unlimited credentials anonymously. */
+        .route(
+            "/merchants",
+            post(provision_merchant).route_layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_admin_secret,
+            )),
+        )
         .nest("/payments", {
-            // Auth middleware on the write + list routes and webhook
-            // redelivery (it triggers a merchant-scoped outbound request);
-            // the per-payment status and webhook-listing endpoints stay
-            // public (anyone with the id can poll or inspect).
+            /* Auth middleware only on the write + list routes; the per-payment
+            status and webhook endpoints stay public (anyone with the id can
+            poll or inspect). */
             let authed = axum::Router::new()
                 .route("/", post(payments::create).get(payments::list))
-                .route(
-                    "/:id/webhooks/:delivery_id/redeliver",
-                    post(payments::redeliver_webhook),
-                )
+                .route("/:id/webhooks", get(payments::list_webhooks))
                 .route_layer(middleware::from_fn_with_state(
                     state.clone(),
                     auth_middleware,
@@ -72,7 +76,10 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
             axum::Router::new()
                 .merge(authed)
                 .route("/:id", get(payments::get_by_id))
-                .route("/:id/webhooks", get(payments::list_webhooks))
+                .route(
+                    "/:id/webhooks/:delivery_id/redeliver",
+                    post(payments::redeliver_webhook),
+                )
         })
         .fallback(not_found)
         .layer(PropagateRequestIdLayer::x_request_id())
@@ -128,9 +135,33 @@ async fn auth_middleware(
     }
 }
 
+/// Guards `POST /merchants` with a shared admin secret sent via the
+/// `X-Admin-Secret` header. An unset `ADMIN_PROVISIONING_SECRET` disables
+/// provisioning entirely rather than leaving the endpoint open.
+async fn require_admin_secret(
+    State(state): State<Arc<AppState>>,
+    req: Request,
+    next: Next,
+) -> axum::response::Response {
+    let configured = &state.config.admin_provisioning_secret;
+    let provided = req
+        .headers()
+        .get("x-admin-secret")
+        .and_then(|v| v.to_str().ok());
+
+    if configured.is_empty() || provided != Some(configured.as_str()) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "missing or invalid admin secret", "code": "unauthorized" })),
+        )
+            .into_response();
+    }
+
+    next.run(req).await
+}
+
 /// `POST /merchants` — provision a new merchant and return its API key once.
-/// In production this endpoint should be protected (e.g., by an admin secret
-/// or removed entirely in favour of an offline provisioning script).
+/// Requires the `X-Admin-Secret` header (see `require_admin_secret`).
 async fn provision_merchant(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -160,11 +191,10 @@ async fn rate_limit_middleware(
     req: Request,
     next: Next,
 ) -> axum::response::Response {
-    if let Some(bucket) = rate_limited_bucket(&req) {
-        // Keyed by bucket + client, not the raw (dynamic) path — a payment or
-        // delivery id in the URL must never become its own limiter entry, or
-        // the map would grow without bound.
-        let key = format!("{bucket}:{}", rate_limit_key(&req));
+    if req.method() == axum::http::Method::POST
+        && matches!(req.uri().path(), "/payments" | "/merchants")
+    {
+        let key = rate_limit_key(&req);
         let limited = {
             let mut map = rate_limit.limiters.lock().unwrap();
             let limiter = map.entry(key).or_insert_with(|| {
@@ -191,23 +221,14 @@ async fn rate_limit_middleware(
     next.run(req).await
 }
 
-/// Identifies which rate-limit bucket (if any) a request falls into. Returns
-/// `None` for everything else, so unrelated routes aren't limited at all.
-fn rate_limited_bucket(req: &Request) -> Option<&'static str> {
-    if req.method() != axum::http::Method::POST {
-        return None;
-    }
-    let path = req.uri().path();
-    if path == "/payments" {
-        return Some("payments");
-    }
-    if path.starts_with("/payments/") && path.ends_with("/redeliver") {
-        return Some("redeliver");
-    }
-    None
+/// Keyed by path + client so `/merchants` and `/payments` are rate-limited
+/// independently — provisioning a merchant should never eat into a client's
+/// payment quota (or vice versa).
+fn rate_limit_key(req: &Request) -> String {
+    format!("{}:{}", req.uri().path(), client_ip_key(req))
 }
 
-fn rate_limit_key(req: &Request) -> String {
+fn client_ip_key(req: &Request) -> String {
     if let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
         return addr.ip().to_string();
     }
