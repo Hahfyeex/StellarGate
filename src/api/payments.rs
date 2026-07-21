@@ -187,7 +187,8 @@ pub async fn create(
             .bind(&merchant_id)
             .bind(key)
             .execute(&state.pool)
-            .await?;
+            .await
+            .map_err(anyhow::Error::from)?;
         }
     }
 
@@ -498,6 +499,9 @@ pub async fn redeliver_webhook(
         .header("Content-Type", "application/json")
         .header("X-StellarGate-Signature", &signature)
         .header("X-StellarGate-Timestamp", timestamp.to_string())
+        // Convenience header — mirrors the `event` field already present in
+        // the signed body. NOT covered by the HMAC; receivers must route on
+        // the authenticated body field, not this header.
         .header("X-StellarGate-Event", &event)
         .body(delivery.payload.clone())
         .send()

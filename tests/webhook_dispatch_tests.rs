@@ -185,3 +185,80 @@ async fn dispatch_marks_failed_after_exhausting_retries() {
     assert_eq!(deliveries[0].status, "failed");
     assert_eq!(deliveries[0].attempts, 3);
 }
+
+#[tokio::test]
+async fn event_field_in_body_matches_header_and_is_covered_by_signature() {
+    /* Security regression test for issue #160.
+     *
+     * The X-StellarGate-Event header is NOT covered by the HMAC signature.
+     * Receivers MUST route on the `event` field inside the verified JSON body,
+     * not on the header. This test asserts:
+     *
+     * 1. The signed body contains the `event` field.
+     * 2. The header value mirrors the body's event field (i.e. they agree when
+     *    the request has not been tampered with).
+     * 3. The HMAC signature is computed over the body (which includes `event`),
+     *    so altering the header would not invalidate the signature — confirming
+     *    the header is informational only.
+     */
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let cfg = make_config("test-secret", 1);
+    let state = setup_state(cfg).await;
+    let payment = create_test_payment(&state, &format!("{}/hook", server.uri())).await;
+
+    webhook::dispatch(&state, &payment, "payment.completed", None).await;
+
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(received.len(), 1);
+    let req = &received[0];
+
+    // 1. The header is present.
+    let header_event = req
+        .headers
+        .get("X-StellarGate-Event")
+        .expect("X-StellarGate-Event header must be present")
+        .to_str()
+        .unwrap();
+
+    // 2. The body contains the `event` field.
+    let body: serde_json::Value =
+        serde_json::from_slice(&req.body).expect("body must be valid JSON");
+    let body_event = body["event"]
+        .as_str()
+        .expect("body must contain an `event` field");
+
+    // 3. Header and body agree (no tampering in this happy-path test).
+    assert_eq!(
+        header_event, body_event,
+        "X-StellarGate-Event header must mirror the body event field"
+    );
+    assert_eq!(body_event, "payment.completed");
+
+    // 4. The signature is valid over the body (which contains `event`),
+    //    confirming the event type is authenticated through the body, not the header.
+    let timestamp: i64 = req
+        .headers
+        .get("X-StellarGate-Timestamp")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let expected_sig = webhook::sign(&state.config.webhook_secret, timestamp, &req.body);
+    assert_eq!(
+        req.headers
+            .get("X-StellarGate-Signature")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        expected_sig,
+        "signature must be valid over the body (which contains the event field)"
+    );
+}

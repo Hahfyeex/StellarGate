@@ -7,6 +7,12 @@
 //! - `X-StellarGate-Timestamp`: the Unix time (seconds) the event was signed.
 //! - `X-StellarGate-Signature`: the hex HMAC-SHA256 of `"{timestamp}.{body}"`
 //!   (Stripe-style), keyed with the shared `WEBHOOK_SECRET`.
+//! - `X-StellarGate-Event`: a convenience copy of the `event` field from the
+//!   body, included so receivers can route cheaply before parsing JSON.
+//!   **This header is not covered by the HMAC signature.** It can be altered
+//!   in transit without invalidating the signature. Receivers that make
+//!   security-sensitive decisions MUST route on the `event` field inside the
+//!   verified JSON body, not on this header.
 //!
 //! Binding the signature to the timestamp stops a captured request from being
 //! replayed indefinitely: a receiver recomputes the signature over the same
@@ -26,6 +32,12 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// Compute the hex-encoded HMAC-SHA256 signature for a webhook, binding it to
 /// `timestamp` by signing the Stripe-style payload `"{timestamp}.{body}"`.
+///
+/// The `body` is the full JSON event payload produced by [`build_payload`],
+/// which always includes an `"event"` field. Because the event type is part of
+/// the signed body, receivers can rely on it being authentic after verifying
+/// the signature — no separate signing of the `X-StellarGate-Event` header is
+/// needed or performed.
 ///
 /// Receivers must recompute the signature over the same `"{timestamp}.{body}"`
 /// string and reject the request if `timestamp` is too far from their own clock
@@ -73,6 +85,12 @@ pub fn build_payload(payment: &db::Payment, event: &str, delta: Option<&str>) ->
 /// failure per the configured policy. Each attempt and the final outcome are
 /// recorded in the `webhook_deliveries` table. Errors are logged, never
 /// propagated — a failed webhook must not roll back a confirmed payment.
+///
+/// The signed body (`"{timestamp}.{body}"`) already contains the `event` field,
+/// so the event type is fully authenticated by the HMAC signature. The
+/// `X-StellarGate-Event` header is also included as a routing convenience but
+/// is **not** covered by the signature — receivers must not use it for
+/// security-sensitive decisions.
 ///
 /// `delta` is the absolute amount difference included in overpaid/underpaid
 /// events; pass `None` for exact-payment events.
@@ -124,6 +142,9 @@ pub async fn dispatch(state: &AppState, payment: &db::Payment, event: &str, delt
             .header("Content-Type", "application/json")
             .header("X-StellarGate-Signature", &signature)
             .header("X-StellarGate-Timestamp", timestamp.to_string())
+            // Convenience header — mirrors the `event` field already present in
+            // the signed body. NOT covered by the HMAC; receivers must route on
+            // the authenticated body field, not this header.
             .header("X-StellarGate-Event", event)
             .body(body.clone())
             .send()
@@ -208,5 +229,52 @@ mod tests {
     fn signature_changes_with_secret() {
         let body = b"{\"event\":\"payment.success\"}";
         assert_ne!(sign("secret-a", 1, body), sign("secret-b", 1, body));
+    }
+
+    #[test]
+    fn build_payload_includes_event_in_signed_body() {
+        // The `event` field must be present in the JSON body so that after
+        // signature verification a receiver can read the authenticated event
+        // type from the body rather than from the unsigned X-StellarGate-Event
+        // header. This test locks that contract.
+        let payment = db::Payment {
+            id: "pay_1".into(),
+            merchant_id: "merchant_1".into(),
+            destination_address: "GDESTINATION".into(),
+            memo: "ABCD1234".into(),
+            amount: "10".into(),
+            asset: "XLM".into(),
+            status: "completed".into(),
+            tx_hash: Some("txhash".into()),
+            paid_amount: Some("10".into()),
+            webhook_url: None,
+            created_at: "2026-01-01T00:00:00".into(),
+            updated_at: "2026-01-01T00:00:01".into(),
+            expires_at: "2026-01-01T01:00:00".into(),
+        };
+
+        for event in &[
+            "payment.completed",
+            "payment.overpaid",
+            "payment.underpaid",
+            "payment.expired",
+        ] {
+            let payload = build_payload(&payment, event, None);
+            assert_eq!(
+                payload["event"].as_str(),
+                Some(*event),
+                "build_payload must embed the event type in the JSON body \
+                 so it is covered by the HMAC signature (event={event})"
+            );
+
+            // Confirm the serialised bytes contain the event string, i.e. that
+            // it survives the round-trip through serde_json::to_vec used in dispatch().
+            let body = serde_json::to_vec(&payload).unwrap();
+            let body_str = String::from_utf8(body).unwrap();
+            assert!(
+                body_str.contains(event),
+                "serialised body must contain the event string (event={event})"
+            );
+        }
     }
 }

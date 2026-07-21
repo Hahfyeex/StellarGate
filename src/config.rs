@@ -164,13 +164,13 @@ impl Config {
                 }
             },
             webhook_secret,
-            webhook_retry_attempts: parse_env("WEBHOOK_RETRY_ATTEMPTS", 3),
-            webhook_retry_delay_ms: parse_env("WEBHOOK_RETRY_DELAY_MS", 5000),
-            poll_interval_secs: parse_env("POLL_INTERVAL_SECS", 10),
-            payment_ttl_secs: parse_env("PAYMENT_TTL_SECS", 3600),
-            rate_limit_requests_per_sec: parse_env("RATE_LIMIT_REQUESTS_PER_SEC", 10),
-            db_pool_max_connections: parse_env("DB_POOL_MAX_CONNECTIONS", 10),
-            db_busy_timeout_ms: parse_env("DB_BUSY_TIMEOUT_MS", 5000),
+            webhook_retry_attempts: parse_env("WEBHOOK_RETRY_ATTEMPTS", 3)?,
+            webhook_retry_delay_ms: parse_env("WEBHOOK_RETRY_DELAY_MS", 5000)?,
+            poll_interval_secs: parse_env("POLL_INTERVAL_SECS", 10)?,
+            payment_ttl_secs: parse_env("PAYMENT_TTL_SECS", 3600)?,
+            rate_limit_requests_per_sec: parse_env("RATE_LIMIT_REQUESTS_PER_SEC", 10)?,
+            db_pool_max_connections: parse_env("DB_POOL_MAX_CONNECTIONS", 10)?,
+            db_busy_timeout_ms: parse_env("DB_BUSY_TIMEOUT_MS", 5000)?,
             cors_allowed_origins,
             listener_mode: ListenerMode::parse(
                 &std::env::var("STELLAR_LISTENER_MODE").unwrap_or_default(),
@@ -700,10 +700,7 @@ mod tests {
         cfg.webhook_retry_attempts = 3;
         cfg.webhook_retry_delay_ms = 0;
         let err = cfg.validate_timing().unwrap_err().to_string();
-        assert!(
-            err.contains("WEBHOOK_RETRY_DELAY_MS"),
-            "got: {err}"
-        );
+        assert!(err.contains("WEBHOOK_RETRY_DELAY_MS"), "got: {err}");
     }
 
     #[test]

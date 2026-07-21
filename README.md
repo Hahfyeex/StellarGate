@@ -380,12 +380,14 @@ matching payment status.
 
 ### Verifying webhooks
 
-Every webhook request carries two headers:
+Every webhook request carries two headers that together authenticate the event:
 
 | Header | Value |
 |---|---|
 | `X-StellarGate-Timestamp` | Unix time (seconds) at which the event was signed |
 | `X-StellarGate-Signature` | Hex HMAC-SHA256 of `"{timestamp}.{raw_body}"`, keyed with your `WEBHOOK_SECRET` |
+
+A third header, `X-StellarGate-Event`, is included as a routing convenience (e.g. to quickly filter events in a load balancer before parsing JSON). **This header is not part of the signed material** — it mirrors the `event` field in the body but can be altered in transit without invalidating the signature. Always verify the signature first, then read the event type from the signed body.
 
 The signature covers the timestamp as well as the body (Stripe-style), so a
 captured request cannot be replayed indefinitely. To verify:
@@ -399,6 +401,9 @@ captured request cannot be replayed indefinitely. To verify:
 4. Compute `HMAC_SHA256(WEBHOOK_SECRET, "{t}.{raw_body}")` and hex-encode it.
 5. Compare it to `sig` with a **constant-time** equality check. Reject on
    mismatch.
+6. After the signature passes, read the `event` field from the **body** to
+   determine the event type. Do **not** route on `X-StellarGate-Event` for
+   security-sensitive logic.
 
 Example (Node.js):
 
@@ -416,6 +421,23 @@ function verify(rawBody, headers, secret, toleranceSec = 300) {
     .update(`${t}.${rawBody}`)
     .digest("hex");
   return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+}
+
+// Usage: always read the event type from the verified body, never from the header.
+// X-StellarGate-Event is a convenience header only — it is NOT signed.
+function handleWebhook(rawBody, headers, secret) {
+  if (!verify(rawBody, headers, secret)) {
+    throw new Error("invalid signature");
+  }
+  const payload = JSON.parse(rawBody);
+  const event = payload.event; // ← authenticated; safe to route on
+  // const event = headers["x-stellargate-event"]; // ← NOT authenticated; do not use
+  switch (event) {
+    case "payment.completed": /* ... */ break;
+    case "payment.overpaid":  /* ... */ break;
+    case "payment.underpaid": /* ... */ break;
+    case "payment.expired":   /* ... */ break;
+  }
 }
 ```
 
