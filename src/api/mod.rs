@@ -278,8 +278,16 @@ fn build_cors(cfg: &crate::config::Config) -> CorsLayer {
         return CorsLayer::permissive();
     }
 
-    let allow_origins: Vec<axum::http::HeaderValue> =
-        origins.iter().filter_map(|o| o.parse().ok()).collect();
+    let allow_origins: Vec<axum::http::HeaderValue> = origins
+        .iter()
+        .map(|o| {
+            o.parse().unwrap_or_else(|e| {
+                // Origins are validated in Config::from_env, so this branch is
+                // unreachable in production. Treat it as a programming error.
+                panic!("BUG: unparseable CORS origin {o:?} reached build_cors: {e}")
+            })
+        })
+        .collect();
 
     CorsLayer::new()
         .allow_origin(AllowOrigin::list(allow_origins))

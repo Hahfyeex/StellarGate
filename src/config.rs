@@ -125,8 +125,31 @@ impl Config {
         let gateway_secret = std::env::var("STELLAR_GATEWAY_SECRET").unwrap_or_default();
         let webhook_secret = Self::validate_webhook_secret(std::env::var("WEBHOOK_SECRET"))?;
 
+        let cors_allowed_origins: Vec<String> = {
+            let raw_origins: Vec<String> = std::env::var("CORS_ALLOWED_ORIGINS")
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect();
+
+            // Validate every configured origin now so a typo aborts boot with
+            // a clear message instead of silently removing the origin from the
+            // allowlist (or producing an empty allowlist with no error).
+            for origin in &raw_origins {
+                origin.parse::<axum::http::HeaderValue>().map_err(|e| {
+                    anyhow::anyhow!(
+                        "CORS_ALLOWED_ORIGINS contains an invalid origin {origin:?}: {e}. \
+                         Fix or remove the bad entry."
+                    )
+                })?;
+            }
+            raw_origins
+        };
+
         let config = Self {
-            port: parse_env("PORT", 3000),
+            port: parse_env("PORT", 3000)?,
             database_url,
             network,
             horizon_url,
@@ -148,17 +171,11 @@ impl Config {
             rate_limit_requests_per_sec: parse_env("RATE_LIMIT_REQUESTS_PER_SEC", 10),
             db_pool_max_connections: parse_env("DB_POOL_MAX_CONNECTIONS", 10),
             db_busy_timeout_ms: parse_env("DB_BUSY_TIMEOUT_MS", 5000),
-            cors_allowed_origins: std::env::var("CORS_ALLOWED_ORIGINS")
-                .unwrap_or_default()
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-                .collect(),
+            cors_allowed_origins,
             listener_mode: ListenerMode::parse(
                 &std::env::var("STELLAR_LISTENER_MODE").unwrap_or_default(),
             ),
-            webhook_allow_private_targets: parse_env("WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
+            webhook_allow_private_targets: parse_env("WEBHOOK_ALLOW_PRIVATE_TARGETS", false)?,
             admin_provisioning_secret: env_or("ADMIN_PROVISIONING_SECRET", ""),
         };
         config.validate_addresses()?;
@@ -322,18 +339,26 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
-/// Parse an env var into `T`, falling back to `default` (and warning) when the
-/// variable is set but unparseable, so a typo never silently breaks behaviour.
-fn parse_env<T>(key: &str, default: T) -> T
+/// Parse an env var into `T`.
+///
+/// - If the variable is absent, `default` is returned.
+/// - If the variable is present but cannot be parsed, boot is aborted with a
+///   clear error message instead of silently falling back to the default.
+///   This prevents misconfigured values (e.g. a typo in `PAYMENT_TTL_SECS`)
+///   from going unnoticed in production.
+fn parse_env<T>(key: &str, default: T) -> Result<T>
 where
     T: std::str::FromStr,
+    T::Err: std::fmt::Display,
 {
     match std::env::var(key) {
-        Ok(raw) => raw.parse().unwrap_or_else(|_| {
-            tracing::warn!("invalid value for {key}={raw:?}, using default");
-            default
+        Ok(raw) => raw.parse::<T>().map_err(|e| {
+            anyhow::anyhow!(
+                "invalid value for {key}={raw:?}: {e}. \
+                 Fix the environment variable or remove it to use the default."
+            )
         }),
-        Err(_) => default,
+        Err(_) => Ok(default),
     }
 }
 
