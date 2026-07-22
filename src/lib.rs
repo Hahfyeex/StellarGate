@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod expiry;
 pub mod horizon;
+pub mod metrics;
 pub mod money;
 pub mod ssrf;
 pub mod strkey;
@@ -20,4 +21,11 @@ pub struct AppState {
     /// `WEBHOOK_TIMEOUT_SECS` timeout (default 10 s) so that a slow receiver
     /// cannot block the reconciler or amplify retry latency.
     pub webhook_http: reqwest::Client,
+    /// Webhook delivery metrics: delivered/failed/retried counts and latency
+    /// histogram. Exposed via GET /metrics.
+    pub webhook_metrics: metrics::WebhookMetrics,
+    /// Background task health: count of healthy tasks and cumulative unexpected
+    /// exits. A non-zero failure count or a healthy count below the expected
+    /// number of workers signals a problem that warrants an alert.
+    pub task_health: metrics::TaskHealth,
 }
