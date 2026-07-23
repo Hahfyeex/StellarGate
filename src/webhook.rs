@@ -159,7 +159,9 @@ pub async fn dispatch(state: &AppState, payment: &db::Payment, event: &str, delt
             Ok(resp) if resp.status().is_success() => {
                 info!(payment_id = %payment.id, %url, attempt, "webhook delivered");
                 state.webhook_metrics.record_delivered();
-                state.webhook_metrics.record_latency_ms(start.elapsed().as_millis() as u64);
+                state
+                    .webhook_metrics
+                    .record_latency_ms(start.elapsed().as_millis() as u64);
                 let _ = db::update_webhook_delivery(
                     &state.pool,
                     &delivery_id,
@@ -169,16 +171,24 @@ pub async fn dispatch(state: &AppState, payment: &db::Payment, event: &str, delt
                 .await;
                 return;
             }
-            Ok(resp) => { warn!(payment_id = %payment.id, status = %resp.status(), attempt, "webhook rejected"); }
-            Err(e) => { warn!(payment_id = %payment.id, error = %e, attempt, "webhook request failed"); }
+            Ok(resp) => {
+                warn!(payment_id = %payment.id, status = %resp.status(), attempt, "webhook rejected");
+            }
+            Err(e) => {
+                warn!(payment_id = %payment.id, error = %e, attempt, "webhook request failed");
+            }
         }
 
-        if attempt < attempts { tokio::time::sleep(delay).await; }
+        if attempt < attempts {
+            tokio::time::sleep(delay).await;
+        }
     }
 
     warn!(payment_id = %payment.id, %url, "webhook delivery exhausted all retries");
     state.webhook_metrics.record_failed();
-    state.webhook_metrics.record_latency_ms(start.elapsed().as_millis() as u64);
+    state
+        .webhook_metrics
+        .record_latency_ms(start.elapsed().as_millis() as u64);
     let _ = db::update_webhook_delivery(&state.pool, &delivery_id, "failed", attempts as i64).await;
 }
 
@@ -289,24 +299,34 @@ async fn redrive_one(state: &Arc<AppState>, delivery: db::WebhookDelivery) {
         Ok(resp) if resp.status().is_success() => {
             info!(delivery_id = %delivery.id, %attempt, "webhook redriven successfully");
             state.webhook_metrics.record_delivered();
-            state.webhook_metrics.record_latency_ms(start.elapsed().as_millis() as u64);
+            state
+                .webhook_metrics
+                .record_latency_ms(start.elapsed().as_millis() as u64);
             "delivered"
         }
         Ok(resp) => {
             warn!(delivery_id = %delivery.id, status = %resp.status(), %attempt, "redrive attempt rejected");
             if attempt >= state.config.webhook_redrive_max_attempts as i64 {
                 state.webhook_metrics.record_failed();
-                state.webhook_metrics.record_latency_ms(start.elapsed().as_millis() as u64);
+                state
+                    .webhook_metrics
+                    .record_latency_ms(start.elapsed().as_millis() as u64);
                 "failed"
-            } else { "pending" }
+            } else {
+                "pending"
+            }
         }
         Err(e) => {
             warn!(delivery_id = %delivery.id, error = %e, %attempt, "redrive attempt failed");
             if attempt >= state.config.webhook_redrive_max_attempts as i64 {
                 state.webhook_metrics.record_failed();
-                state.webhook_metrics.record_latency_ms(start.elapsed().as_millis() as u64);
+                state
+                    .webhook_metrics
+                    .record_latency_ms(start.elapsed().as_millis() as u64);
                 "failed"
-            } else { "pending" }
+            } else {
+                "pending"
+            }
         }
     };
 

@@ -377,10 +377,7 @@ impl Config {
 
         // Reject the classic .env.example placeholder: starts with 'S' and
         // the rest are all 'X's (e.g. SXXXXXXX…56 chars).
-        if !secret.is_empty()
-            && secret.starts_with('S')
-            && secret.chars().skip(1).all(|c| c == 'X')
-        {
+        if !secret.is_empty() && secret.starts_with('S') && secret.chars().skip(1).all(|c| c == 'X') {
             return Err(anyhow::anyhow!(
                 "STELLAR_GATEWAY_SECRET is set to a placeholder value from .env.example. \
                  Replace it with your real Stellar secret key."
@@ -659,10 +656,7 @@ mod tests {
         let err = Config::validate_webhook_secret(Ok("default-secret".into()))
             .unwrap_err()
             .to_string();
-        assert!(
-            err.contains("known placeholder value"),
-            "got: {err}"
-        );
+        assert!(err.contains("known placeholder value"), "got: {err}");
     }
 
     #[test]
