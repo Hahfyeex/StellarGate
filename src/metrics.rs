@@ -137,7 +137,9 @@ pub fn render(webhook: &WebhookMetrics) -> String {
     let mut out = String::with_capacity(1024);
 
     // stellargate_webhook_deliveries_total — counter vec by outcome
-    out.push_str("# HELP stellargate_webhook_deliveries_total Total webhook delivery attempts by outcome.\n");
+    out.push_str(
+        "# HELP stellargate_webhook_deliveries_total Total webhook delivery attempts by outcome.\n",
+    );
     out.push_str("# TYPE stellargate_webhook_deliveries_total counter\n");
     out.push_str(&format!(
         "stellargate_webhook_deliveries_total{{outcome=\"delivered\"}} {}\n",
