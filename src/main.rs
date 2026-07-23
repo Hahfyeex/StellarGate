@@ -151,6 +151,10 @@ async fn main() -> Result<()> {
         if let Some(h) = stream_handle {
             join_task!(h);
         }
+        join_task!(poller_handle);
+        join_task!(sweeper_handle);
+        join_task!(redrive_handle);
+        if let Some(h) = stream_handle { join_task!(h); }
     };
     if tokio::time::timeout(timeout, bg).await.is_err() {
         info!("background tasks did not finish within 30s; forcing exit");
@@ -162,11 +166,8 @@ async fn main() -> Result<()> {
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl-C handler");
+        tokio::signal::ctrl_c().await.expect("failed to install Ctrl-C handler");
     };
-
     #[cfg(unix)]
     let terminate = async {
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -174,10 +175,8 @@ async fn shutdown_signal() {
             .recv()
             .await;
     };
-
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
-
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},

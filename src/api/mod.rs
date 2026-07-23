@@ -314,14 +314,52 @@ async fn health() -> impl IntoResponse {
     Json(json!({ "status": "ok" }))
 }
 
+/// Readiness probe — returns 200 only when both the database AND Horizon are
+/// reachable. A pod that cannot reach Horizon cannot detect on-chain payments;
+/// routing traffic to it is worse than routing it elsewhere (issue #172).
+///
+/// Uses a 3-second timeout on the Horizon check so a slow node never hangs
+/// the probe. The check is skipped when no gateway is configured
+/// (STELLAR_GATEWAY_PUBLIC=UNCONFIGURED) since without a gateway there is no
+/// on-chain work to do.
 async fn ready(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match db::ping(&state.pool).await {
-        Ok(()) => (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response(),
-        Err(_) => (
+    // 1. Database must respond.
+    if db::ping(&state.pool).await.is_err() {
+        return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "status": "unavailable" })),
+            Json(json!({ "status": "unavailable", "reason": "database unreachable" })),
         )
-            .into_response(),
+            .into_response();
+    }
+
+    // 2. Horizon must respond (only when a gateway wallet is configured).
+    if state.config.gateway_configured() {
+        if let Err(reason) = check_horizon_ready(&state).await {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "status": "unavailable", "reason": reason })),
+            )
+                .into_response();
+        }
+    }
+
+    (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response()
+}
+
+/// Probe Horizon with a hard 3-second timeout.
+/// Returns Ok(()) when reachable (any non-5xx response), or an error string.
+async fn check_horizon_ready(state: &Arc<AppState>) -> Result<(), String> {
+    let url = state.config.horizon_url.trim_end_matches('/').to_string();
+    let result = tokio::time::timeout(
+        Duration::from_millis(3_000),
+        state.http.get(&url).header("Accept", "application/json").send(),
+    )
+    .await;
+    match result {
+        Ok(Ok(resp)) if resp.status().as_u16() < 500 => Ok(()),
+        Ok(Ok(resp)) => Err(format!("Horizon returned {}", resp.status())),
+        Ok(Err(e))   => Err(format!("Horizon unreachable: {e}")),
+        Err(_)       => Err("Horizon health check timed out".to_string()),
     }
 }
 

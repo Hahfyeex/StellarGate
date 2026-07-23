@@ -21,7 +21,7 @@ fn make_config(rate_limit_requests_per_sec: u32) -> Config {
         database_url: "sqlite::memory:".into(),
         network: "testnet".into(),
         horizon_url: String::new(),
-        gateway_public: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5".into(),
+        gateway_public: "UNCONFIGURED".into(),
         gateway_secret: String::new(),
         accepted_assets: stellargate::config::AcceptedAsset::default_list(),
         webhook_secret: String::new(),
