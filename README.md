@@ -379,10 +379,9 @@ Fired when a payment is received but falls short of the requested amount. `delta
 }
 ```
 
-Event types: `payment.success` (paid in full), `payment.failed` (underpaid or
-verification failed), and `payment.expired` (the intent's TTL elapsed before
-payment arrived). The `event` field carries the type; `status` carries the
-matching payment status.
+**See [WEBHOOK_REFERENCE.md](WEBHOOK_REFERENCE.md) for the canonical webhook documentation**, including all event types, signature verification, and integration examples.
+
+⚠️ **Event types in code:** `payment.completed` (paid in full), `payment.overpaid` (excess payment), `payment.underpaid` (shortfall remaining), and `payment.expired` (TTL elapsed). The `event` field in the signed body carries the authoritative type.
 
 ### Verifying webhooks
 
